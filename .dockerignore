@@ -1,0 +1,9 @@
+.git
+.venv
+__pycache__
+*.pyc
+
+# Local app data
+.env
+uploads/
+alembic/versions/*
