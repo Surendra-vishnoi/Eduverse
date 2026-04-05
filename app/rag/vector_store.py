@@ -15,7 +15,7 @@ import logging
 from typing import Dict, List, Optional
 
 from langchain_core.documents import Document
-from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_nomic import NomicEmbeddings
 from langchain_postgres import PGVector
 from sqlalchemy import text
 
@@ -25,25 +25,25 @@ from app.core.sync_db import get_sync_engine
 logger = logging.getLogger(__name__)
 
 # Embedding model singleton
-_embedding_model: Optional[HuggingFaceEmbeddings] = None
+_embedding_model: Optional[NomicEmbeddings] = None
 
 
-def get_embeddings() -> HuggingFaceEmbeddings:
+def get_embeddings() -> NomicEmbeddings:
     """
-    Get or create the embedding model singleton.
-
-    Uses the model specified in settings.EMBEDDING_MODEL
-    (default: BAAI/bge-base-en-v1.5, 768-dim, runs fully locally).
+    Get or create the embedding model singleton using Nomic API.
+    Does not load heavy ML models into local RAM, fitting Render Free Tier.
     """
     global _embedding_model
     if _embedding_model is None:
-        logger.info(f"Loading embedding model: {settings.EMBEDDING_MODEL}")
-        _embedding_model = HuggingFaceEmbeddings(
-            model_name=settings.EMBEDDING_MODEL,
-            model_kwargs={"device": "cpu"},
-            encode_kwargs={"normalize_embeddings": True},
+        logger.info("Initializing NomicEmbeddings (API-based)")
+        if not settings.NOMIC_API_KEY:
+            raise ValueError("NOMIC_API_KEY is missing in environment variables.")
+        # Nomic text embeddings are 768-dimensional, fast, and high quality
+        _embedding_model = NomicEmbeddings(
+            model="nomic-embed-text-v1.5",
+            nomic_api_key=settings.NOMIC_API_KEY
         )
-        logger.info("Embedding model loaded successfully")
+        logger.info("Nomic Embedding model loaded successfully")
     return _embedding_model
 
 

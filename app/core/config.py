@@ -48,6 +48,7 @@ class Settings(BaseSettings):
     RAG_PARENT_CHUNK_SIZE: int = 1600
 
     GROQ_API_KEY: Optional[str] = None
+    NOMIC_API_KEY: Optional[str] = None
 
     SUPABASE_URL: Optional[str] = None
     SUPABASE_KEY: Optional[str] = None

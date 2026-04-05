@@ -28,14 +28,13 @@ langchain>=1.2.0
 langchain-groq>=1.1.0
 langchain-community>=0.4.0
 langchain-postgres>=0.0.17
-langchain-huggingface>=1.2.0
+langchain-nomic>=0.1.0
 langchain-text-splitters>=1.1.0
 langgraph>=1.0.0
 langgraph-checkpoint>=4.0.0
 langgraph-checkpoint-postgres>=3.0.0
 
 # ML
-sentence-transformers>=2.3.0
 flashrank>=0.2.0
 
 # Groq
@@ -50,5 +49,5 @@ python-pptx>=1.0.2
 # Utils
 backoff>=2.2.0
 itsdangerous>=2.2.0
-Pillow>=12.1.1
+Pillow>=10.3.0,<12.0.0
 pymupdf_layout>=0.0.1
