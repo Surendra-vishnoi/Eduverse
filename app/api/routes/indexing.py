@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 from typing import List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, status
@@ -77,6 +78,21 @@ async def start_indexing(
             detail="File already indexed. Delete first to re-index.",
         )
 
+    has_local_copy = bool(
+        file_record.local_path and os.path.exists(file_record.local_path)
+    )
+    if not file_record.drive_id and not has_local_copy:
+        file_record.processing_status = "failed"
+        file_record.processing_error = (
+            "Cannot index file: no drive_id and local file is unavailable. "
+            "Re-upload this file or sync it again from Classroom."
+        )
+        await db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=file_record.processing_error,
+        )
+
     # Mark as processing — commit (not flush!) to release the row lock
     # before the background task tries to UPDATE the same row with its own session.
     file_record.processing_status = "processing"
@@ -144,20 +160,47 @@ async def start_course_indexing(
     pending_files = files_result.scalars().all()
 
     if not pending_files:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="No pending files found for this course",
+        return BatchIndexingResponse(
+            message="No pending files found for this course",
+            course_id=course_id,
+            files_queued=0,
+            file_ids=[],
         )
 
-    # Mark all files as processing FIRST, then commit, then schedule tasks
+    # Mark indexable files as processing. Mark impossible files as failed.
+    indexable_files = []
+    unindexable_count = 0
     file_ids = []
     for file_record in pending_files:
-        file_record.processing_status = "processing"
-        file_record.processing_error = None
-        file_ids.append(file_record.id)
+        has_local_copy = bool(
+            file_record.local_path and os.path.exists(file_record.local_path)
+        )
+        if file_record.drive_id or has_local_copy:
+            file_record.processing_status = "processing"
+            file_record.processing_error = None
+            file_ids.append(file_record.id)
+            indexable_files.append(file_record)
+        else:
+            file_record.processing_status = "failed"
+            file_record.processing_error = (
+                "Cannot index file: no drive_id and local file is unavailable. "
+                "Re-upload this file or sync it again from Classroom."
+            )
+            unindexable_count += 1
 
     # Commit all status changes in one transaction BEFORE scheduling background tasks
     await db.commit()
+
+    if not indexable_files:
+        return BatchIndexingResponse(
+            message=(
+                "No indexable files found for this course. "
+                f"Marked {unindexable_count} file(s) as failed."
+            ),
+            course_id=course_id,
+            files_queued=0,
+            file_ids=[],
+        )
 
     # Process files concurrently (with semaphore to respect Groq rate limits)
     # Using asyncio.gather inside a single background task instead of
@@ -176,14 +219,21 @@ async def start_course_indexing(
 
     async def _batch_index():
         await asyncio.gather(
-            *(_index_with_limit(f) for f in pending_files),
+            *(_index_with_limit(f) for f in indexable_files),
             return_exceptions=True,
         )
 
     background_tasks.add_task(_batch_index)
 
     return BatchIndexingResponse(
-        message=f"Queued {len(file_ids)} files for indexing",
+        message=(
+            f"Queued {len(file_ids)} files for indexing"
+            + (
+                f" ({unindexable_count} unindexable file(s) were marked failed)"
+                if unindexable_count
+                else ""
+            )
+        ),
         course_id=course_id,
         files_queued=len(file_ids),
         file_ids=file_ids,

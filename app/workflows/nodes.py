@@ -87,7 +87,13 @@ async def download_node(state: IndexingState) -> Dict[str, Any]:
     if not encrypted_access:
         return {"status": "failed", "error": "User credentials not found"}
     if not drive_id:
-        return {"status": "failed", "error": "No drive_id on file record"}
+        return {
+            "status": "failed",
+            "error": (
+                "No drive_id on file record and local file is unavailable. "
+                "Re-upload this file or sync it again from Classroom."
+            ),
+        }
 
     # Heavy I/O: Download (NO transaction open) 
     from google.oauth2.credentials import Credentials
