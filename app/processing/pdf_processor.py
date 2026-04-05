@@ -44,13 +44,21 @@ def _build_loader(
     """
     _configure_tesseract_windows()
 
-    vision_llm = create_vision_llm(groq_api_key, vision_model)
+    if settings.PDF_EXTRACT_IMAGES:
+        vision_llm = create_vision_llm(groq_api_key, vision_model)
+        return PyMuPDF4LLMLoader(
+            file_path,
+            mode="page",
+            extract_images=True,
+            images_parser=LLMImageBlobParser(model=vision_llm),
+            table_strategy="lines",
+        )
 
+    # Fast path: skip image extraction/OCR to reduce processing latency.
     return PyMuPDF4LLMLoader(
         file_path,
         mode="page",
-        extract_images=True,
-        images_parser=LLMImageBlobParser(model=vision_llm),
+        extract_images=False,
         table_strategy="lines",
     )
 

@@ -31,6 +31,21 @@ _retriever_cache: dict[tuple, tuple["HybridRetriever", float]] = {}
 _CACHE_TTL_SECONDS = 300
 
 
+def _build_reranker() -> Optional[FlashrankRerank]:
+    """Create FlashRank reranker only when enabled."""
+    if not settings.RAG_ENABLE_RERANK:
+        return None
+    try:
+        return FlashrankRerank(
+            model=settings.RAG_RERANK_MODEL,
+            top_n=settings.RAG_RERANK_TOP_N,
+            score_threshold=settings.RAG_RERANK_SCORE_THRESHOLD,
+        )
+    except Exception as e:
+        logger.warning(f"FlashRank disabled due to initialization failure: {e}")
+        return None
+
+
 def invalidate_retriever_cache(
     user_id: str, course_id: Optional[str] = None
 ) -> None:
@@ -105,7 +120,7 @@ class HybridRetriever:
         self,
         vector_retriever,
         vector_store: EduverseVectorStore,
-        reranker: FlashrankRerank,
+        reranker: Optional[FlashrankRerank],
         groq_api_key: str,
         course_id: Optional[str] = None,
         top_n: int = 5,
@@ -150,17 +165,20 @@ class HybridRetriever:
         else:
             merged = vector_docs
 
-        # Step 3: Rerank with FlashRank cross-encoder
+        # Step 3: Optional rerank (FlashRank)
         if merged:
-            try:
-                reranked = self.reranker.compress_documents(merged, search_query)
-                logger.info(
-                    f"Reranked: {len(merged)} → {len(reranked)} docs, "
-                    f"scores={[round(d.metadata.get('relevance_score', 0), 3) for d in reranked[:5]]}"
-                )
-                results = reranked[: self.top_n]
-            except Exception as e:
-                logger.warning(f"Reranking failed, returning unranked: {e}")
+            if self.reranker is not None:
+                try:
+                    reranked = self.reranker.compress_documents(merged, search_query)
+                    logger.info(
+                        f"Reranked: {len(merged)} → {len(reranked)} docs, "
+                        f"scores={[round(d.metadata.get('relevance_score', 0), 3) for d in reranked[:5]]}"
+                    )
+                    results = reranked[: self.top_n]
+                except Exception as e:
+                    logger.warning(f"Reranking failed, returning unranked: {e}")
+                    results = merged[: self.top_n]
+            else:
                 results = merged[: self.top_n]
 
             # Step 4: Expand context with neighbouring chunks
@@ -278,11 +296,7 @@ def _build_pipeline(
                 search_type="mmr", search_kwargs={"k": 5}
             ),
             vector_store=vs,
-            reranker=FlashrankRerank(
-                model=settings.RAG_RERANK_MODEL,
-                top_n=settings.RAG_RERANK_TOP_N,
-                score_threshold=settings.RAG_RERANK_SCORE_THRESHOLD,
-            ),
+            reranker=_build_reranker(),
             groq_api_key=groq_api_key,
             course_id=course_id,
         )
@@ -299,12 +313,7 @@ def _build_pipeline(
         search_type="mmr", search_kwargs=search_kwargs
     )
 
-    # FlashRank cross-encoder reranker (MiniLM-L-12 for quality)
-    reranker = FlashrankRerank(
-        model=settings.RAG_RERANK_MODEL,
-        top_n=settings.RAG_RERANK_TOP_N,
-        score_threshold=settings.RAG_RERANK_SCORE_THRESHOLD,
-    )
+    reranker = _build_reranker()
 
     logger.info(
         f"Hybrid retriever: PG FTS + MMR(k={search_kwargs['k']}) "
