@@ -34,7 +34,7 @@ class FileResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: str
-    drive_id: str
+    drive_id: Optional[str] = None
     drive_name: str
     detected_type: Optional[str] = None
     processing_status: str
@@ -210,7 +210,13 @@ async def _sync_course_files_background(user_id: str, course_id: str, classroom_
             skipped_count = 0
             
             for cf in classroom_files:
-                if cf['drive_id'].startswith(('link_')):
+                drive_id = cf.get('drive_id')
+                if not drive_id:
+                    logger.warning(f"[sync] Skipping file without drive_id: {cf.get('drive_name', 'Unknown')}")
+                    skipped_count += 1
+                    continue
+
+                if drive_id.startswith('link_'):
                     logger.debug(f"[sync] Skipping non-Drive file: {cf['drive_name']}")
                     skipped_count += 1
                     continue
@@ -218,7 +224,7 @@ async def _sync_course_files_background(user_id: str, course_id: str, classroom_
                 result = await db.execute(
                     select(File).where(
                         File.user_id == user_id,
-                        File.drive_id == cf['drive_id']
+                        File.drive_id == drive_id
                     )
                 )
                 existing_file = result.scalar_one_or_none()
@@ -231,7 +237,7 @@ async def _sync_course_files_background(user_id: str, course_id: str, classroom_
                 try:
                     logger.info(f"[sync] Downloading: {cf['drive_name']} (mime={cf.get('mime_type')})")
                     local_path, file_size, file_hash = await file_service.download_file(
-                        cf['drive_id'],
+                        drive_id,
                         cf['drive_name'],
                         user_id
                     )
@@ -242,7 +248,7 @@ async def _sync_course_files_background(user_id: str, course_id: str, classroom_
                         id=str(uuid.uuid4()),
                         user_id=user_id,
                         course_id=course_id,
-                        drive_id=cf['drive_id'],
+                        drive_id=drive_id,
                         drive_name=cf['drive_name'],
                         mime_type=cf['mime_type'],
                         web_view_link=cf['web_view_link'],

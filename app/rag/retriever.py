@@ -16,6 +16,7 @@ import logging
 import time
 from typing import List, Optional
 
+from langchain_community.document_compressors.flashrank_rerank import FlashrankRerank
 from langchain_core.documents import Document
 
 from app.core.config import settings
@@ -104,6 +105,7 @@ class HybridRetriever:
         self,
         vector_retriever,
         vector_store: EduverseVectorStore,
+        reranker: FlashrankRerank,
         groq_api_key: str,
         course_id: Optional[str] = None,
         top_n: int = 5,
@@ -113,6 +115,7 @@ class HybridRetriever:
     ):
         self.vector_retriever = vector_retriever
         self.vector_store = vector_store
+        self.reranker = reranker
         self.groq_api_key = groq_api_key
         self.course_id = course_id
         self.top_n = top_n
@@ -275,7 +278,11 @@ def _build_pipeline(
                 search_type="mmr", search_kwargs={"k": 5}
             ),
             vector_store=vs,
-
+            reranker=FlashrankRerank(
+                model=settings.RAG_RERANK_MODEL,
+                top_n=settings.RAG_RERANK_TOP_N,
+                score_threshold=settings.RAG_RERANK_SCORE_THRESHOLD,
+            ),
             groq_api_key=groq_api_key,
             course_id=course_id,
         )
@@ -292,7 +299,12 @@ def _build_pipeline(
         search_type="mmr", search_kwargs=search_kwargs
     )
 
-
+    # FlashRank cross-encoder reranker (MiniLM-L-12 for quality)
+    reranker = FlashrankRerank(
+        model=settings.RAG_RERANK_MODEL,
+        top_n=settings.RAG_RERANK_TOP_N,
+        score_threshold=settings.RAG_RERANK_SCORE_THRESHOLD,
+    )
 
     logger.info(
         f"Hybrid retriever: PG FTS + MMR(k={search_kwargs['k']}) "
@@ -302,6 +314,7 @@ def _build_pipeline(
     return HybridRetriever(
         vector_retriever=vector_retriever,
         vector_store=vs,
+        reranker=reranker,
         groq_api_key=groq_api_key,
         course_id=course_id,
     )

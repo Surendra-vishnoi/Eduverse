@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.routes.auth import get_current_user
 from app.core.database import get_db
+from app.core.config import settings
 from app.core.utils import validate_groq_key
 from app.models.database import User
 from app.rag.agent import build_tutor_agent, invoke_agent, stream_agent, _get_checkpointer
@@ -85,7 +86,7 @@ class HistoryResponse(BaseModel):
 @router.post("/query", response_model=QueryResponse)
 async def chat_query(
     request: QueryRequest,
-    x_groq_api_key: str = Header(..., alias="X-Groq-Api-Key"),
+    x_groq_api_key: Optional[str] = Header(None, alias="X-Groq-Api-Key"),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -108,10 +109,12 @@ async def chat_query(
       - `course_id`: Restrict retrieval to one course's materials.
     """
     # ── Validate inputs ──────────────────────────────────────────
+    # Fallback to .env setting if not provided by client
+    final_api_key = x_groq_api_key or settings.GROQ_API_KEY
     try:
-        validate_groq_key(x_groq_api_key)
-    except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        validate_groq_key(final_api_key)
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Groq API key missing or invalid. Please configure it.")
 
     if not request.question.strip():
         raise HTTPException(
@@ -129,7 +132,7 @@ async def chat_query(
         # ── Build and invoke the tutor agent ──────────────────────
         agent = build_tutor_agent(
             user_id=user.id,
-            groq_api_key=x_groq_api_key,
+            groq_api_key=final_api_key,
             course_id=request.course_id,
             session_id=session_id,
             checkpointer=checkpointer,
@@ -185,7 +188,7 @@ async def chat_query(
 @router.post("/query/stream")
 async def chat_query_stream(
     request: QueryRequest,
-    x_groq_api_key: str = Header(..., alias="X-Groq-Api-Key"),
+    x_groq_api_key: Optional[str] = Header(None, alias="X-Groq-Api-Key"),
     user: User = Depends(get_current_user),
 ):
     """
@@ -199,10 +202,12 @@ async def chat_query_stream(
 
     Use this for a real-time, responsive chat experience.
     """
+    # Fallback to .env setting if not provided by client
+    final_api_key = x_groq_api_key or settings.GROQ_API_KEY
     try:
-        validate_groq_key(x_groq_api_key)
-    except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        validate_groq_key(final_api_key)
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Groq API key missing or invalid. Please configure it.")
 
     if not request.question.strip():
         raise HTTPException(
@@ -216,7 +221,7 @@ async def chat_query_stream(
 
     agent = build_tutor_agent(
         user_id=user.id,
-        groq_api_key=x_groq_api_key,
+        groq_api_key=final_api_key,
         course_id=request.course_id,
         session_id=session_id,
         checkpointer=checkpointer,
