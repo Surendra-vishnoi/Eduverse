@@ -27,6 +27,8 @@ class Settings(BaseSettings):
     GOOGLE_CLIENT_ID: Optional[str] = None
     GOOGLE_CLIENT_SECRET: Optional[str] = None
     GOOGLE_REDIRECT_URI: Optional[str] = "http://localhost:8000/auth/callback"
+    FRONTEND_URL: Optional[str] = None
+    FRONTEND_AUTH_CALLBACK_PATH: str = "/auth/callback"
     
     EMBEDDING_MODEL: str = "BAAI/bge-base-en-v1.5"
 
