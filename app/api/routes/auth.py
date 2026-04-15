@@ -3,7 +3,7 @@ from fastapi.responses import RedirectResponse, JSONResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 from app.services.google_auth import GoogleAuthService
 from app.core.config import settings
@@ -32,15 +32,53 @@ class RefreshTokenRequest(BaseModel):
     refresh_token: str
 
 
-def _build_frontend_callback_url(access_token: str, refresh_token: str) -> str | None:
-    """Build frontend callback URL with token fragment (not query string)."""
-    if not settings.FRONTEND_URL:
+def _normalize_origin(url: str) -> str | None:
+    parsed = urlparse(url.strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         return None
+    return f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
 
-    base = settings.FRONTEND_URL.rstrip("/")
-    callback_path = settings.FRONTEND_AUTH_CALLBACK_PATH.strip() or "/auth/callback"
-    if not callback_path.startswith("/"):
-        callback_path = f"/{callback_path}"
+
+def _is_allowed_frontend_redirect(frontend_redirect: str) -> bool:
+    redirect_origin = _normalize_origin(frontend_redirect)
+    if not redirect_origin:
+        return False
+
+    allowed_origins = {
+        origin
+        for origin in (
+            _normalize_origin(str(item)) for item in settings.BACKEND_CORS_ORIGINS
+        )
+        if origin
+    }
+
+    if settings.FRONTEND_URL:
+        frontend_origin = _normalize_origin(settings.FRONTEND_URL)
+        if frontend_origin:
+            allowed_origins.add(frontend_origin)
+
+    return redirect_origin in allowed_origins
+
+
+def _build_frontend_callback_url(
+    access_token: str,
+    refresh_token: str,
+    frontend_redirect: str | None = None,
+) -> str | None:
+    """Build frontend callback URL with token fragment (not query string)."""
+    callback_base = None
+    if frontend_redirect and _is_allowed_frontend_redirect(frontend_redirect):
+        callback_base = frontend_redirect.split("#", 1)[0]
+    elif settings.FRONTEND_URL:
+        base = settings.FRONTEND_URL.rstrip("/")
+        callback_path = settings.FRONTEND_AUTH_CALLBACK_PATH.strip() or "/auth/callback"
+        if not callback_path.startswith("/"):
+            callback_path = f"/{callback_path}"
+
+        callback_base = f"{base}{callback_path}"
+
+    if not callback_base:
+        return None
 
     fragment = urlencode(
         {
@@ -49,10 +87,14 @@ def _build_frontend_callback_url(access_token: str, refresh_token: str) -> str |
             "token_type": "bearer",
         }
     )
-    return f"{base}{callback_path}#{fragment}"
+    return f"{callback_base}#{fragment}"
 
 @router.get("/login")
-async def login(request: Request, redirect: bool = True):
+async def login(
+    request: Request,
+    redirect: bool = True,
+    frontend_redirect: str | None = None,
+):
     """
     Start Google OAuth login flow.
     
@@ -62,6 +104,13 @@ async def login(request: Request, redirect: bool = True):
     auth_url, state, code_verifier = auth_service.get_authorization_url()
     request.session["oauth_state"] = state
     request.session["oauth_code_verifier"] = code_verifier
+
+    # Optional dynamic frontend callback for multi-frontend deployments.
+    # Only store if origin is allowlisted to avoid open redirect risks.
+    if frontend_redirect and _is_allowed_frontend_redirect(frontend_redirect):
+        request.session["frontend_redirect"] = frontend_redirect
+    else:
+        request.session.pop("frontend_redirect", None)
     
     if redirect:
         return RedirectResponse(auth_url)
@@ -102,10 +151,12 @@ async def callback(
         # OAuth state/code_verifier are one-time use values.
         request.session.pop("oauth_state", None)
         request.session.pop("oauth_code_verifier", None)
+        frontend_redirect = request.session.pop("frontend_redirect", None)
 
         frontend_callback_url = _build_frontend_callback_url(
             access_token=tokens["access_token"],
             refresh_token=tokens["refresh_token"],
+            frontend_redirect=frontend_redirect,
         )
 
         if response_mode != "json" and frontend_callback_url:
