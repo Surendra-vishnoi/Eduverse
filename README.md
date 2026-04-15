@@ -176,6 +176,4 @@ If frontend domain changes, update:
 - BACKEND_CORS_ORIGINS
 - FRONTEND_URL
 
-## License
 
-MIT (or project-specific license, if changed by maintainers).
