@@ -172,6 +172,9 @@ For best UX in browser login flow, configure:
 Frontend is deployed separately and consumes this API:
 - https://frontend-eduverse.vercel.app/
 
+Frontend repository:
+- https://github.com/Surendra-vishnoi/frontend_eduverse
+
 If frontend domain changes, update:
 - BACKEND_CORS_ORIGINS
 - FRONTEND_URL
