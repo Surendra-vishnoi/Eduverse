@@ -215,16 +215,24 @@ async def stream_agent(
     config = {"configurable": {"thread_id": session_id}}
     inputs = {"messages": [HumanMessage(content=query)]}
 
-    def _stream_sync():
-        """Run agent.stream() synchronously (called via to_thread)."""
-        chunks = []
-        for event in agent.stream(inputs, config, stream_mode="updates"):
-            chunks.append(event)
-        return chunks
+    def _stream_iter_sync():
+        """Create a synchronous event iterator for the agent stream."""
+        return agent.stream(inputs, config, stream_mode="updates")
 
-    events = await asyncio.to_thread(_stream_sync)
+    def _next_event_sync(iterator):
+        """Fetch one event from the synchronous iterator."""
+        try:
+            return True, next(iterator)
+        except StopIteration:
+            return False, None
 
-    for event in events:
+    iterator = await asyncio.to_thread(_stream_iter_sync)
+
+    while True:
+        has_event, event = await asyncio.to_thread(_next_event_sync, iterator)
+        if not has_event:
+            break
+
         for node_name, node_output in event.items():
             messages = node_output.get("messages", [])
             for msg in messages:
