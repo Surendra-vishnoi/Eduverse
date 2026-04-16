@@ -218,10 +218,46 @@ async def stream_agent(
     loop = asyncio.get_running_loop()
     queue: asyncio.Queue[tuple[str, object]] = asyncio.Queue()
 
+    def _normalize_content(content: object) -> str:
+        """Extract plain text from streaming content blocks."""
+        if isinstance(content, str):
+            return content
+
+        if isinstance(content, list):
+            parts: list[str] = []
+            for block in content:
+                if isinstance(block, str):
+                    parts.append(block)
+                    continue
+
+                if isinstance(block, dict):
+                    text = block.get("text")
+                    if isinstance(text, str):
+                        parts.append(text)
+                    continue
+
+                text_attr = getattr(block, "text", None)
+                if isinstance(text_attr, str):
+                    parts.append(text_attr)
+
+            return "".join(parts)
+
+        if isinstance(content, dict):
+            text = content.get("text")
+            if isinstance(text, str):
+                return text
+            content_text = content.get("content")
+            if isinstance(content_text, str):
+                return content_text
+            return ""
+
+        return str(content) if content is not None else ""
+
     def _stream_worker() -> None:
         """Run the synchronous LangGraph stream in one dedicated thread."""
         try:
-            for event in agent.stream(inputs, config, stream_mode="updates"):
+            # 'messages' emits model/message chunks suitable for progressive UI streaming.
+            for event in agent.stream(inputs, config, stream_mode="messages"):
                 loop.call_soon_threadsafe(queue.put_nowait, ("event", event))
         except Exception as exc:
             loop.call_soon_threadsafe(queue.put_nowait, ("error", exc))
@@ -236,22 +272,37 @@ async def stream_agent(
 
             if kind == "event":
                 event = payload
-                if not isinstance(event, dict):
+
+                # stream_mode='messages' returns (message_chunk, metadata)
+                # where message_chunk carries token/message content.
+                msg = event[0] if isinstance(event, tuple) else event
+                if msg is None:
                     continue
 
-                for node_name, node_output in event.items():
-                    messages = node_output.get("messages", [])
-                    for msg in messages:
-                        if hasattr(msg, "tool_call_id"):
-                            # Tool result
-                            yield f"data: {json.dumps({'type': 'tool_result', 'tool': getattr(msg, 'name', 'unknown'), 'content': msg.content[:200]})}\n\n"
-                        elif hasattr(msg, "tool_calls") and msg.tool_calls:
-                            # Agent deciding to call a tool
-                            for tc in msg.tool_calls:
-                                yield f"data: {json.dumps({'type': 'tool_call', 'tool': tc['name'], 'args': str(tc.get('args', {}))[:200]})}\n\n"
-                        elif hasattr(msg, "content") and msg.content:
-                            # Final answer or intermediate reasoning
-                            yield f"data: {json.dumps({'type': 'answer', 'content': msg.content})}\n\n"
+                if hasattr(msg, "tool_call_id"):
+                    # Tool result
+                    tool_content = _normalize_content(getattr(msg, "content", ""))
+                    yield f"data: {json.dumps({'type': 'tool_result', 'tool': getattr(msg, 'name', 'unknown'), 'content': tool_content[:200]})}\n\n"
+                    continue
+
+                tool_calls = getattr(msg, "tool_calls", None)
+                if tool_calls:
+                    # Agent deciding to call a tool
+                    for tc in tool_calls:
+                        if isinstance(tc, dict):
+                            tool_name = tc.get("name", "unknown")
+                            args = str(tc.get("args", {}))[:200]
+                        else:
+                            tool_name = getattr(tc, "name", "unknown")
+                            args = str(getattr(tc, "args", {}))[:200]
+
+                        yield f"data: {json.dumps({'type': 'tool_call', 'tool': tool_name, 'args': args})}\n\n"
+                    continue
+
+                text_chunk = _normalize_content(getattr(msg, "content", ""))
+                if text_chunk:
+                    # Progressive answer chunk
+                    yield f"data: {json.dumps({'type': 'answer', 'content': text_chunk})}\n\n"
             elif kind == "error":
                 if isinstance(payload, Exception):
                     raise payload
