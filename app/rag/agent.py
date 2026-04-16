@@ -101,8 +101,11 @@ def _get_checkpointer() -> PostgresSaver:
             else:
                 raise
 
-# History trimming 
+# History compression settings
+# Keep only the most recent 3 messages after summarization (cost-conscious mode).
 MAX_HISTORY_MESSAGES = 3
+# Trigger summarization only when history grows large to reduce extra summary calls.
+SUMMARY_TRIGGER_MESSAGES = 40
 
 
 # Agent builder
@@ -117,9 +120,9 @@ def build_tutor_agent(
     """
     Build the LangGraph tutor agent using ``create_agent``.
 
-    Middleware stack (applied automatically on every model call):
-      1. **SummarizationMiddleware** — condenses history once it exceeds
-         ``MAX_HISTORY_MESSAGES``, preventing token overflow.
+     Middleware stack (applied automatically on every model call):
+        1. **SummarizationMiddleware** — triggers when message history reaches
+            ``SUMMARY_TRIGGER_MESSAGES`` and retains ``MAX_HISTORY_MESSAGES``.
       2. **ModelRetryMiddleware** — retries on Groq ``tool_use_failed`` /
          transient errors with exponential back-off.
       3. **ModelCallLimitMiddleware** — hard cap of 25 model calls per
@@ -151,6 +154,7 @@ def build_tutor_agent(
         middleware=[
             SummarizationMiddleware(
                 model=summary_llm,
+                trigger=("messages", SUMMARY_TRIGGER_MESSAGES),
                 keep=("messages", MAX_HISTORY_MESSAGES),
             ),
             ModelRetryMiddleware(
