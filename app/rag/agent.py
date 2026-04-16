@@ -215,37 +215,51 @@ async def stream_agent(
     config = {"configurable": {"thread_id": session_id}}
     inputs = {"messages": [HumanMessage(content=query)]}
 
-    def _stream_iter_sync():
-        """Create a synchronous event iterator for the agent stream."""
-        return agent.stream(inputs, config, stream_mode="updates")
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue[tuple[str, object]] = asyncio.Queue()
 
-    def _next_event_sync(iterator):
-        """Fetch one event from the synchronous iterator."""
+    def _stream_worker() -> None:
+        """Run the synchronous LangGraph stream in one dedicated thread."""
         try:
-            return True, next(iterator)
-        except StopIteration:
-            return False, None
+            for event in agent.stream(inputs, config, stream_mode="updates"):
+                loop.call_soon_threadsafe(queue.put_nowait, ("event", event))
+        except Exception as exc:
+            loop.call_soon_threadsafe(queue.put_nowait, ("error", exc))
+        finally:
+            loop.call_soon_threadsafe(queue.put_nowait, ("done", None))
 
-    iterator = await asyncio.to_thread(_stream_iter_sync)
+    worker_task = asyncio.create_task(asyncio.to_thread(_stream_worker))
 
-    while True:
-        has_event, event = await asyncio.to_thread(_next_event_sync, iterator)
-        if not has_event:
-            break
+    try:
+        while True:
+            kind, payload = await queue.get()
 
-        for node_name, node_output in event.items():
-            messages = node_output.get("messages", [])
-            for msg in messages:
-                if hasattr(msg, "tool_call_id"):
-                    # Tool result
-                    yield f"data: {json.dumps({'type': 'tool_result', 'tool': getattr(msg, 'name', 'unknown'), 'content': msg.content[:200]})}\n\n"
-                elif hasattr(msg, "tool_calls") and msg.tool_calls:
-                    # Agent deciding to call a tool
-                    for tc in msg.tool_calls:
-                        yield f"data: {json.dumps({'type': 'tool_call', 'tool': tc['name'], 'args': str(tc.get('args', {}))[:200]})}\n\n"
-                elif hasattr(msg, "content") and msg.content:
-                    # Final answer or intermediate reasoning
-                    yield f"data: {json.dumps({'type': 'answer', 'content': msg.content})}\n\n"
+            if kind == "event":
+                event = payload
+                if not isinstance(event, dict):
+                    continue
+
+                for node_name, node_output in event.items():
+                    messages = node_output.get("messages", [])
+                    for msg in messages:
+                        if hasattr(msg, "tool_call_id"):
+                            # Tool result
+                            yield f"data: {json.dumps({'type': 'tool_result', 'tool': getattr(msg, 'name', 'unknown'), 'content': msg.content[:200]})}\n\n"
+                        elif hasattr(msg, "tool_calls") and msg.tool_calls:
+                            # Agent deciding to call a tool
+                            for tc in msg.tool_calls:
+                                yield f"data: {json.dumps({'type': 'tool_call', 'tool': tc['name'], 'args': str(tc.get('args', {}))[:200]})}\n\n"
+                        elif hasattr(msg, "content") and msg.content:
+                            # Final answer or intermediate reasoning
+                            yield f"data: {json.dumps({'type': 'answer', 'content': msg.content})}\n\n"
+            elif kind == "error":
+                if isinstance(payload, Exception):
+                    raise payload
+                raise RuntimeError("Unknown stream worker error")
+            elif kind == "done":
+                break
+    finally:
+        await worker_task
 
     yield "data: [DONE]\n\n"
 
