@@ -1,9 +1,7 @@
 from fastapi import APIRouter, Request, Response, Depends, HTTPException, status
 from fastapi.responses import RedirectResponse, JSONResponse
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
-from pydantic import BaseModel
-from urllib.parse import urlencode, urlparse
+from urllib.parse import urlparse
 
 from app.services.google_auth import GoogleAuthService
 from app.core.config import settings
@@ -18,18 +16,6 @@ from sqlalchemy import select
 
 router = APIRouter()
 auth_service = GoogleAuthService()
-
-bearer_scheme = HTTPBearer(auto_error=False)
-
-class TokenResponse(BaseModel):
-    access_token: str
-    refresh_token: str
-    token_type: str = "bearer"
-    user: dict
-
-
-class RefreshTokenRequest(BaseModel):
-    refresh_token: str | None = None
 
 
 def _normalize_origin(url: str) -> str | None:
@@ -117,15 +103,9 @@ def _clear_auth_cookies(response: Response) -> None:
 
 
 def _build_frontend_callback_url(
-    access_token: str,
-    refresh_token: str,
     frontend_redirect: str | None = None,
 ) -> str | None:
-    """Build frontend callback URL.
-
-    During phased rollout we can disable fragment fallback while still
-    redirecting users to the frontend callback route after cookies are set.
-    """
+    """Build frontend callback URL for cookie-based auth flow."""
     callback_base = None
     if frontend_redirect and _is_allowed_frontend_redirect(frontend_redirect):
         callback_base = frontend_redirect.split("#", 1)[0]
@@ -137,20 +117,7 @@ def _build_frontend_callback_url(
 
         callback_base = f"{base}{callback_path}"
 
-    if not callback_base:
-        return None
-
-    if not settings.AUTH_FRAGMENT_FALLBACK_ENABLED:
-        return callback_base
-
-    fragment = urlencode(
-        {
-            "access_token": access_token,
-            "refresh_token": refresh_token,
-            "token_type": "bearer",
-        }
-    )
-    return f"{callback_base}#{fragment}"
+    return callback_base
 
 @router.get("/login")
 async def login(
@@ -187,12 +154,11 @@ async def callback(
     request: Request,
     code: str,
     state: str,
-    response_mode: str = "auto",
     db: AsyncSession = Depends(get_db)
 ):
     """
     Handle Google OAuth callback.
-    Exchange code for tokens, create/update user, issue JWT.
+    Exchange code for tokens, create/update user, issue JWT cookies.
     """
     stored_state = request.session.get("oauth_state")
     if not stored_state or state != stored_state:
@@ -217,12 +183,10 @@ async def callback(
         frontend_redirect = request.session.pop("frontend_redirect", None)
 
         frontend_callback_url = _build_frontend_callback_url(
-            access_token=tokens["access_token"],
-            refresh_token=tokens["refresh_token"],
             frontend_redirect=frontend_redirect,
         )
 
-        if response_mode != "json" and frontend_callback_url:
+        if frontend_callback_url:
             redirect_response = RedirectResponse(
                 url=frontend_callback_url,
                 status_code=status.HTTP_303_SEE_OTHER,
@@ -235,7 +199,7 @@ async def callback(
             return redirect_response
         
         json_response = JSONResponse(content={
-            **tokens,
+            "message": "Authenticated successfully",
             "user": {
                 "id": user.id,
                 "email": user.email,
@@ -259,23 +223,16 @@ async def callback(
         )
 
 
-@router.post("/refresh", response_model=TokenResponse)
+@router.post("/refresh")
 async def refresh_token(
     request: Request,
     response: Response,
-    payload: RefreshTokenRequest | None = None,
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Refresh access token using refresh token.
-    Accepts token from JSON body (legacy) or HttpOnly cookie (phase rollout).
+    Refresh auth cookies using HttpOnly refresh token cookie.
     """
-    refresh_token_value = None
-    if payload and payload.refresh_token:
-        refresh_token_value = payload.refresh_token.strip()
-
-    if not refresh_token_value and settings.AUTH_COOKIE_ENABLED:
-        refresh_token_value = request.cookies.get(settings.AUTH_COOKIE_REFRESH_NAME)
+    refresh_token_value = request.cookies.get(settings.AUTH_COOKIE_REFRESH_NAME)
 
     if not refresh_token_value:
         raise HTTPException(
@@ -306,16 +263,8 @@ async def refresh_token(
         access_token=tokens["access_token"],
         refresh_token=tokens["refresh_token"],
     )
-    
-    return TokenResponse(
-        **tokens,
-        user={
-            "id": user.id,
-            "email": user.email,
-            "name": user.name,
-            "picture": user.picture
-        }
-    )
+
+    return {"message": "Token refreshed"}
 
 
 @router.post("/logout")
@@ -332,30 +281,23 @@ async def logout(request: Request):
 
 async def get_current_user(
     request: Request,
-    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
     db: AsyncSession = Depends(get_db)
 ) -> User:
     """
     FastAPI dependency to get current authenticated user.
-    Uses HTTPBearer for Swagger UI compatibility.
+    Uses HttpOnly cookie-based JWT authentication.
     
     Usage:
         @router.get("/profile")
         async def get_profile(user: User = Depends(get_current_user)):
             return user
     """
-    token = None
-    if settings.AUTH_COOKIE_ENABLED:
-        token = request.cookies.get(settings.AUTH_COOKIE_ACCESS_NAME)
-
-    if not token and settings.AUTH_BEARER_FALLBACK_ENABLED and credentials:
-        token = credentials.credentials
+    token = request.cookies.get(settings.AUTH_COOKIE_ACCESS_NAME)
 
     if not token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing authentication credentials",
-            headers={"WWW-Authenticate": "Bearer"},
+            detail="Missing authentication cookie",
         )
     
     user_id = verify_token(token, token_type="access")
@@ -364,7 +306,6 @@ async def get_current_user(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired token",
-            headers={"WWW-Authenticate": "Bearer"},
         )
     
     result = await db.execute(select(User).where(User.id == user_id))
@@ -374,7 +315,6 @@ async def get_current_user(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User not found or inactive",
-            headers={"WWW-Authenticate": "Bearer"},
         )
     
     return user

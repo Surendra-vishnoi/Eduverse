@@ -23,8 +23,6 @@ class Settings(BaseSettings):
     REFRESH_TOKEN_EXPIRE_DAYS: int = 30
 
     AUTH_COOKIE_ENABLED: bool = True
-    AUTH_FRAGMENT_FALLBACK_ENABLED: bool = False
-    AUTH_BEARER_FALLBACK_ENABLED: bool = True
     AUTH_COOKIE_ACCESS_NAME: str = "eduverse_access_token"
     AUTH_COOKIE_REFRESH_NAME: str = "eduverse_refresh_token"
     AUTH_COOKIE_DOMAIN: Optional[str] = None
