@@ -348,7 +348,7 @@ async def get_current_user(
     if settings.AUTH_COOKIE_ENABLED:
         token = request.cookies.get(settings.AUTH_COOKIE_ACCESS_NAME)
 
-    if not token and credentials:
+    if not token and settings.AUTH_BEARER_FALLBACK_ENABLED and credentials:
         token = credentials.credentials
 
     if not token:
