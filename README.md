@@ -8,6 +8,16 @@ This service handles:
 - File ingestion and indexing into PostgreSQL + pgvector
 - Retrieval-augmented chat with citations and session memory
 
+## Repository
+
+Primary backend repository:
+
+- https://github.com/Surendra-vishnoi/Eduverse
+
+Related frontend repository:
+
+- https://github.com/Surendra-vishnoi/frontend_eduverse
+
 ## Live Deployment
 
 - Frontend (Vercel): https://frontend-eduverse.vercel.app/
@@ -201,9 +211,6 @@ For best UX in browser login flow, configure:
 
 Frontend is deployed separately and consumes this API:
 - https://frontend-eduverse.vercel.app/
-
-Frontend repository:
-- https://github.com/Surendra-vishnoi/frontend_eduverse
 
 If frontend domain changes, update:
 - BACKEND_CORS_ORIGINS
