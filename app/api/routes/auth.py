@@ -2,6 +2,7 @@ from fastapi import APIRouter, Request, Response, Depends, HTTPException, status
 from fastapi.responses import RedirectResponse, JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from urllib.parse import urlparse
+import secrets
 
 from app.services.google_auth import GoogleAuthService
 from app.core.config import settings
@@ -59,7 +60,74 @@ def _cookie_samesite() -> str:
     return same_site
 
 
-def _set_auth_cookies(response: Response, access_token: str, refresh_token: str) -> None:
+def _is_state_changing_method(method: str) -> bool:
+    return method.upper() in {"POST", "PUT", "PATCH", "DELETE"}
+
+
+def _set_csrf_cookie(response: Response, csrf_token: str | None = None) -> str:
+    token = csrf_token or secrets.token_urlsafe(32)
+
+    cookie_kwargs: dict[str, str | bool] = {
+        "httponly": False,
+        "secure": _cookie_secure(),
+        "samesite": _cookie_samesite(),
+        "path": settings.AUTH_COOKIE_PATH or "/",
+    }
+
+    if settings.AUTH_COOKIE_DOMAIN:
+        cookie_kwargs["domain"] = settings.AUTH_COOKIE_DOMAIN
+
+    response.set_cookie(
+        key=settings.CSRF_COOKIE_NAME,
+        value=token,
+        max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,
+        **cookie_kwargs,
+    )
+    return token
+
+
+def _clear_csrf_cookie(response: Response) -> None:
+    cookie_kwargs: dict[str, str | bool] = {
+        "path": settings.AUTH_COOKIE_PATH or "/",
+        "secure": _cookie_secure(),
+        "httponly": False,
+        "samesite": _cookie_samesite(),
+    }
+
+    if settings.AUTH_COOKIE_DOMAIN:
+        cookie_kwargs["domain"] = settings.AUTH_COOKIE_DOMAIN
+
+    response.delete_cookie(settings.CSRF_COOKIE_NAME, **cookie_kwargs)
+
+
+def _validate_csrf_request(request: Request) -> None:
+    if not settings.CSRF_PROTECTION_ENABLED:
+        return
+    if not _is_state_changing_method(request.method):
+        return
+
+    csrf_cookie = request.cookies.get(settings.CSRF_COOKIE_NAME)
+    csrf_header = request.headers.get(settings.CSRF_HEADER_NAME)
+
+    if not csrf_cookie or not csrf_header:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Missing CSRF token",
+        )
+
+    if not secrets.compare_digest(csrf_cookie, csrf_header):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid CSRF token",
+        )
+
+
+def _set_auth_cookies(
+    response: Response,
+    access_token: str,
+    refresh_token: str,
+    request: Request | None = None,
+) -> None:
     if not settings.AUTH_COOKIE_ENABLED:
         return
 
@@ -86,6 +154,11 @@ def _set_auth_cookies(response: Response, access_token: str, refresh_token: str)
         **cookie_kwargs,
     )
 
+    existing_csrf_token = None
+    if request:
+        existing_csrf_token = request.cookies.get(settings.CSRF_COOKIE_NAME)
+    _set_csrf_cookie(response, csrf_token=existing_csrf_token)
+
 
 def _clear_auth_cookies(response: Response) -> None:
     cookie_kwargs: dict[str, str | bool] = {
@@ -100,6 +173,7 @@ def _clear_auth_cookies(response: Response) -> None:
 
     response.delete_cookie(settings.AUTH_COOKIE_ACCESS_NAME, **cookie_kwargs)
     response.delete_cookie(settings.AUTH_COOKIE_REFRESH_NAME, **cookie_kwargs)
+    _clear_csrf_cookie(response)
 
 
 def _build_frontend_callback_url(
@@ -195,6 +269,7 @@ async def callback(
                 redirect_response,
                 access_token=tokens["access_token"],
                 refresh_token=tokens["refresh_token"],
+                request=request,
             )
             return redirect_response
         
@@ -211,6 +286,7 @@ async def callback(
             json_response,
             access_token=tokens["access_token"],
             refresh_token=tokens["refresh_token"],
+            request=request,
         )
         return json_response
     
@@ -232,6 +308,8 @@ async def refresh_token(
     """
     Refresh auth cookies using HttpOnly refresh token cookie.
     """
+    _validate_csrf_request(request)
+
     refresh_token_value = request.cookies.get(settings.AUTH_COOKIE_REFRESH_NAME)
 
     if not refresh_token_value:
@@ -262,6 +340,7 @@ async def refresh_token(
         response,
         access_token=tokens["access_token"],
         refresh_token=tokens["refresh_token"],
+        request=request,
     )
 
     return {"message": "Token refreshed"}
@@ -274,6 +353,8 @@ async def logout(request: Request):
     Note: JWTs can't be invalidated, so this just clears session.
     For production, implement token blacklist with Redis.
     """
+    _validate_csrf_request(request)
+
     request.session.clear()
     response = JSONResponse(content={"message": "Logged out successfully"})
     _clear_auth_cookies(response)
@@ -292,6 +373,8 @@ async def get_current_user(
         async def get_profile(user: User = Depends(get_current_user)):
             return user
     """
+    _validate_csrf_request(request)
+
     token = request.cookies.get(settings.AUTH_COOKIE_ACCESS_NAME)
 
     if not token:

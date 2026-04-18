@@ -29,6 +29,10 @@ class Settings(BaseSettings):
     AUTH_COOKIE_PATH: str = "/"
     AUTH_COOKIE_SECURE: Optional[bool] = None
     AUTH_COOKIE_SAMESITE: str = "lax"
+
+    CSRF_PROTECTION_ENABLED: bool = True
+    CSRF_COOKIE_NAME: str = "eduverse_csrf_token"
+    CSRF_HEADER_NAME: str = "X-CSRF-Token"
     
     DATABASE_URL: str = "postgresql+asyncpg://postgres:password@localhost:5432/eduverse"
     
