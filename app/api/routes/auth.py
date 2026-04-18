@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Request, Depends, HTTPException, status
+from fastapi import APIRouter, Request, Response, Depends, HTTPException, status
 from fastapi.responses import RedirectResponse, JSONResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -29,7 +29,7 @@ class TokenResponse(BaseModel):
 
 
 class RefreshTokenRequest(BaseModel):
-    refresh_token: str
+    refresh_token: str | None = None
 
 
 def _normalize_origin(url: str) -> str | None:
@@ -60,12 +60,72 @@ def _is_allowed_frontend_redirect(frontend_redirect: str) -> bool:
     return redirect_origin in allowed_origins
 
 
+def _cookie_secure() -> bool:
+    if settings.AUTH_COOKIE_SECURE is not None:
+        return settings.AUTH_COOKIE_SECURE
+    return not settings.DEBUG
+
+
+def _cookie_samesite() -> str:
+    same_site = (settings.AUTH_COOKIE_SAMESITE or "lax").lower()
+    if same_site not in {"lax", "strict", "none"}:
+        return "lax"
+    return same_site
+
+
+def _set_auth_cookies(response: Response, access_token: str, refresh_token: str) -> None:
+    if not settings.AUTH_COOKIE_ENABLED:
+        return
+
+    cookie_kwargs: dict[str, str | bool] = {
+        "httponly": True,
+        "secure": _cookie_secure(),
+        "samesite": _cookie_samesite(),
+        "path": settings.AUTH_COOKIE_PATH or "/",
+    }
+
+    if settings.AUTH_COOKIE_DOMAIN:
+        cookie_kwargs["domain"] = settings.AUTH_COOKIE_DOMAIN
+
+    response.set_cookie(
+        key=settings.AUTH_COOKIE_ACCESS_NAME,
+        value=access_token,
+        max_age=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        **cookie_kwargs,
+    )
+    response.set_cookie(
+        key=settings.AUTH_COOKIE_REFRESH_NAME,
+        value=refresh_token,
+        max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,
+        **cookie_kwargs,
+    )
+
+
+def _clear_auth_cookies(response: Response) -> None:
+    cookie_kwargs: dict[str, str | bool] = {
+        "path": settings.AUTH_COOKIE_PATH or "/",
+        "secure": _cookie_secure(),
+        "httponly": True,
+        "samesite": _cookie_samesite(),
+    }
+
+    if settings.AUTH_COOKIE_DOMAIN:
+        cookie_kwargs["domain"] = settings.AUTH_COOKIE_DOMAIN
+
+    response.delete_cookie(settings.AUTH_COOKIE_ACCESS_NAME, **cookie_kwargs)
+    response.delete_cookie(settings.AUTH_COOKIE_REFRESH_NAME, **cookie_kwargs)
+
+
 def _build_frontend_callback_url(
     access_token: str,
     refresh_token: str,
     frontend_redirect: str | None = None,
 ) -> str | None:
-    """Build frontend callback URL with token fragment (not query string)."""
+    """Build frontend callback URL.
+
+    During phased rollout we can disable fragment fallback while still
+    redirecting users to the frontend callback route after cookies are set.
+    """
     callback_base = None
     if frontend_redirect and _is_allowed_frontend_redirect(frontend_redirect):
         callback_base = frontend_redirect.split("#", 1)[0]
@@ -79,6 +139,9 @@ def _build_frontend_callback_url(
 
     if not callback_base:
         return None
+
+    if not settings.AUTH_FRAGMENT_FALLBACK_ENABLED:
+        return callback_base
 
     fragment = urlencode(
         {
@@ -160,12 +223,18 @@ async def callback(
         )
 
         if response_mode != "json" and frontend_callback_url:
-            return RedirectResponse(
+            redirect_response = RedirectResponse(
                 url=frontend_callback_url,
                 status_code=status.HTTP_303_SEE_OTHER,
             )
+            _set_auth_cookies(
+                redirect_response,
+                access_token=tokens["access_token"],
+                refresh_token=tokens["refresh_token"],
+            )
+            return redirect_response
         
-        return JSONResponse(content={
+        json_response = JSONResponse(content={
             **tokens,
             "user": {
                 "id": user.id,
@@ -174,6 +243,12 @@ async def callback(
                 "picture": user.picture
             }
         })
+        _set_auth_cookies(
+            json_response,
+            access_token=tokens["access_token"],
+            refresh_token=tokens["refresh_token"],
+        )
+        return json_response
     
     except GoogleAuthError as e:
         raise to_http_exception(e)
@@ -186,13 +261,29 @@ async def callback(
 
 @router.post("/refresh", response_model=TokenResponse)
 async def refresh_token(
-    request: RefreshTokenRequest,
+    request: Request,
+    response: Response,
+    payload: RefreshTokenRequest | None = None,
     db: AsyncSession = Depends(get_db)
 ):
     """
     Refresh access token using refresh token.
+    Accepts token from JSON body (legacy) or HttpOnly cookie (phase rollout).
     """
-    user_id = verify_token(request.refresh_token, token_type="refresh")
+    refresh_token_value = None
+    if payload and payload.refresh_token:
+        refresh_token_value = payload.refresh_token.strip()
+
+    if not refresh_token_value and settings.AUTH_COOKIE_ENABLED:
+        refresh_token_value = request.cookies.get(settings.AUTH_COOKIE_REFRESH_NAME)
+
+    if not refresh_token_value:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing refresh token"
+        )
+
+    user_id = verify_token(refresh_token_value, token_type="refresh")
     
     if not user_id:
         raise HTTPException(
@@ -210,6 +301,11 @@ async def refresh_token(
         )
     
     tokens = create_token_pair(user.id)
+    _set_auth_cookies(
+        response,
+        access_token=tokens["access_token"],
+        refresh_token=tokens["refresh_token"],
+    )
     
     return TokenResponse(
         **tokens,
@@ -230,9 +326,12 @@ async def logout(request: Request):
     For production, implement token blacklist with Redis.
     """
     request.session.clear()
-    return {"message": "Logged out successfully"}
+    response = JSONResponse(content={"message": "Logged out successfully"})
+    _clear_auth_cookies(response)
+    return response
 
 async def get_current_user(
+    request: Request,
     credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
     db: AsyncSession = Depends(get_db)
 ) -> User:
@@ -245,14 +344,19 @@ async def get_current_user(
         async def get_profile(user: User = Depends(get_current_user)):
             return user
     """
-    if not credentials:
+    token = None
+    if settings.AUTH_COOKIE_ENABLED:
+        token = request.cookies.get(settings.AUTH_COOKIE_ACCESS_NAME)
+
+    if not token and credentials:
+        token = credentials.credentials
+
+    if not token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing or invalid authorization header",
+            detail="Missing authentication credentials",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    
-    token = credentials.credentials
     
     user_id = verify_token(token, token_type="access")
     

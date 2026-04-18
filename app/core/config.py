@@ -19,6 +19,17 @@ class Settings(BaseSettings):
     JWT_SECRET: str = "your_jwt_secret_key_here"
     FERNET_KEY: str = "your_fernet_key_here" 
     SECRET_KEY: str = "your_session_secret_key_here"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 30
+
+    AUTH_COOKIE_ENABLED: bool = True
+    AUTH_FRAGMENT_FALLBACK_ENABLED: bool = True
+    AUTH_COOKIE_ACCESS_NAME: str = "eduverse_access_token"
+    AUTH_COOKIE_REFRESH_NAME: str = "eduverse_refresh_token"
+    AUTH_COOKIE_DOMAIN: Optional[str] = None
+    AUTH_COOKIE_PATH: str = "/"
+    AUTH_COOKIE_SECURE: Optional[bool] = None
+    AUTH_COOKIE_SAMESITE: str = "lax"
     
     DATABASE_URL: str = "postgresql+asyncpg://postgres:password@localhost:5432/eduverse"
     
