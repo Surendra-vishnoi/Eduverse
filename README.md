@@ -171,6 +171,13 @@ Other useful settings:
 - RAG_ENABLE_RERANK
 - PDF_EXTRACT_IMAGES
 
+Vector performance settings:
+- VECTOR_EMBEDDING_DIM
+- PGVECTOR_ENABLE_HNSW
+- PGVECTOR_AUTO_MIGRATE_VECTOR_DIMENSION
+- PGVECTOR_HNSW_M
+- PGVECTOR_HNSW_EF_CONSTRUCTION
+
 ## OAuth Redirect Integration Notes
 
 This backend now uses cookie-only browser auth:

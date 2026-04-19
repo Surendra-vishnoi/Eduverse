@@ -45,6 +45,11 @@ class Settings(BaseSettings):
     FRONTEND_AUTH_CALLBACK_PATH: str = "/auth/callback"
     
     EMBEDDING_MODEL: str = "BAAI/bge-base-en-v1.5"
+    VECTOR_EMBEDDING_DIM: int = 768
+    PGVECTOR_ENABLE_HNSW: bool = True
+    PGVECTOR_AUTO_MIGRATE_VECTOR_DIMENSION: bool = True
+    PGVECTOR_HNSW_M: int = 16
+    PGVECTOR_HNSW_EF_CONSTRUCTION: int = 64
 
     AGENT_MODEL: str = "openai/gpt-oss-120b"
     JSON_MODEL: str = "openai/gpt-oss-20b"

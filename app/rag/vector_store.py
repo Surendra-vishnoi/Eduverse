@@ -12,6 +12,7 @@ Usage:
 """
 
 import logging
+from threading import Lock
 from typing import Dict, List, Optional
 
 from langchain_core.documents import Document
@@ -26,6 +27,105 @@ logger = logging.getLogger(__name__)
 
 # Embedding model singleton
 _embedding_model: Optional[NomicEmbeddings] = None
+_vector_index_bootstrap_done = False
+_vector_index_bootstrap_lock = Lock()
+
+
+def _ensure_vector_dimension_and_indexes() -> None:
+    """
+    Best-effort pgvector performance bootstrap.
+
+    - Ensures `vector` extension exists.
+    - Optionally migrates `embedding` column from `vector` to `vector(dim)`.
+    - Creates supporting indexes (collection_id + HNSW cosine ANN).
+
+    Any failure only logs a warning and keeps exact-search behavior.
+    """
+    global _vector_index_bootstrap_done
+
+    if _vector_index_bootstrap_done or not settings.PGVECTOR_ENABLE_HNSW:
+        return
+
+    with _vector_index_bootstrap_lock:
+        if _vector_index_bootstrap_done:
+            return
+
+        engine = get_sync_engine()
+
+        try:
+            with engine.begin() as conn:
+                conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+
+                embedding_col_type = conn.execute(
+                    text(
+                        "SELECT format_type(a.atttypid, a.atttypmod) "
+                        "FROM pg_attribute a "
+                        "JOIN pg_class c ON a.attrelid = c.oid "
+                        "JOIN pg_namespace n ON c.relnamespace = n.oid "
+                        "WHERE c.relname = 'langchain_pg_embedding' "
+                        "AND a.attname = 'embedding' "
+                        "ORDER BY CASE WHEN n.nspname = current_schema() THEN 0 ELSE 1 END "
+                        "LIMIT 1"
+                    )
+                ).scalar()
+
+                expected_type = f"vector({settings.VECTOR_EMBEDDING_DIM})"
+
+                if (
+                    settings.PGVECTOR_AUTO_MIGRATE_VECTOR_DIMENSION
+                    and embedding_col_type == "vector"
+                ):
+                    conn.execute(
+                        text(
+                            f"ALTER TABLE langchain_pg_embedding "
+                            f"ALTER COLUMN embedding TYPE {expected_type} "
+                            f"USING embedding::{expected_type}"
+                        )
+                    )
+                    logger.info(
+                        "Migrated langchain_pg_embedding.embedding to %s for ANN indexing",
+                        expected_type,
+                    )
+                elif embedding_col_type and embedding_col_type != expected_type:
+                    logger.warning(
+                        "Embedding column type is %s (expected %s). "
+                        "HNSW index creation may be skipped.",
+                        embedding_col_type,
+                        expected_type,
+                    )
+
+                conn.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS idx_langchain_pg_embedding_collection_id "
+                        "ON langchain_pg_embedding (collection_id)"
+                    )
+                )
+        except Exception as e:
+            logger.warning("pgvector pre-index setup skipped: %s", e)
+
+        try:
+            with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+                conn.execute(
+                    text(
+                        "CREATE INDEX CONCURRENTLY IF NOT EXISTS "
+                        "idx_langchain_pg_embedding_hnsw_cosine "
+                        "ON langchain_pg_embedding USING hnsw "
+                        "(embedding vector_cosine_ops) "
+                        "WITH (m = :m, ef_construction = :ef_construction)"
+                    ),
+                    {
+                        "m": settings.PGVECTOR_HNSW_M,
+                        "ef_construction": settings.PGVECTOR_HNSW_EF_CONSTRUCTION,
+                    },
+                )
+            logger.info("Ensured HNSW cosine index on langchain_pg_embedding.embedding")
+        except Exception as e:
+            logger.warning(
+                "HNSW index creation skipped; using exact vector search. Reason: %s",
+                e,
+            )
+
+        _vector_index_bootstrap_done = True
 
 
 def get_embeddings() -> NomicEmbeddings:
@@ -65,9 +165,11 @@ class EduverseVectorStore:
         self._store = PGVector(
             collection_name=self.collection_name,
             embeddings=self.embeddings,
-            connection=get_sync_engine(), 
+            connection=get_sync_engine(),
+            embedding_length=settings.VECTOR_EMBEDDING_DIM,
             use_jsonb=True,
         )
+        _ensure_vector_dimension_and_indexes()
 
     def add_documents(self, documents: List[Document]) -> List[str]:
         """Add documents to the vector store."""

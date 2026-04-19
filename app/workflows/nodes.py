@@ -266,7 +266,7 @@ async def embed_node(state: IndexingState) -> Dict[str, Any]:
     """
     Embed chunks into the user's pgvector store.
 
-    Uses local HuggingFace BGE embeddings (free, no API key needed).
+    Uses Nomic API embeddings via EduverseVectorStore.
     Per-user collection: user_{user_id}
     """
     chunks = state.get("chunks", [])
