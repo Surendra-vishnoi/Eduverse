@@ -46,6 +46,7 @@ class Settings(BaseSettings):
     
     EMBEDDING_MODEL: str = "BAAI/bge-base-en-v1.5"
     VECTOR_EMBEDDING_DIM: int = 768
+    PGVECTOR_ENABLE_FTS_GIN_INDEX: bool = True
     PGVECTOR_ENABLE_HNSW: bool = True
     PGVECTOR_AUTO_MIGRATE_VECTOR_DIMENSION: bool = True
     PGVECTOR_HNSW_M: int = 16

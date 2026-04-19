@@ -37,13 +37,13 @@ def _ensure_vector_dimension_and_indexes() -> None:
 
     - Ensures `vector` extension exists.
     - Optionally migrates `embedding` column from `vector` to `vector(dim)`.
-    - Creates supporting indexes (collection_id + HNSW cosine ANN).
+    - Creates supporting indexes (collection_id + GIN FTS + optional HNSW cosine ANN).
 
     Any failure only logs a warning and keeps exact-search behavior.
     """
     global _vector_index_bootstrap_done
 
-    if _vector_index_bootstrap_done or not settings.PGVECTOR_ENABLE_HNSW:
+    if _vector_index_bootstrap_done:
         return
 
     with _vector_index_bootstrap_lock:
@@ -103,27 +103,46 @@ def _ensure_vector_dimension_and_indexes() -> None:
         except Exception as e:
             logger.warning("pgvector pre-index setup skipped: %s", e)
 
-        try:
-            with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
-                conn.execute(
-                    text(
-                        "CREATE INDEX CONCURRENTLY IF NOT EXISTS "
-                        "idx_langchain_pg_embedding_hnsw_cosine "
-                        "ON langchain_pg_embedding USING hnsw "
-                        "(embedding vector_cosine_ops) "
-                        "WITH (m = :m, ef_construction = :ef_construction)"
-                    ),
-                    {
-                        "m": settings.PGVECTOR_HNSW_M,
-                        "ef_construction": settings.PGVECTOR_HNSW_EF_CONSTRUCTION,
-                    },
+        if settings.PGVECTOR_ENABLE_FTS_GIN_INDEX:
+            try:
+                with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+                    conn.execute(
+                        text(
+                            "CREATE INDEX CONCURRENTLY IF NOT EXISTS "
+                            "idx_langchain_pg_embedding_document_fts "
+                            "ON langchain_pg_embedding USING gin "
+                            "(to_tsvector('english', document))"
+                        )
+                    )
+                logger.info("Ensured GIN FTS index on langchain_pg_embedding.document")
+            except Exception as e:
+                logger.warning(
+                    "FTS GIN index creation skipped; text search may be slower. Reason: %s",
+                    e,
                 )
-            logger.info("Ensured HNSW cosine index on langchain_pg_embedding.embedding")
-        except Exception as e:
-            logger.warning(
-                "HNSW index creation skipped; using exact vector search. Reason: %s",
-                e,
-            )
+
+        if settings.PGVECTOR_ENABLE_HNSW:
+            try:
+                with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+                    conn.execute(
+                        text(
+                            "CREATE INDEX CONCURRENTLY IF NOT EXISTS "
+                            "idx_langchain_pg_embedding_hnsw_cosine "
+                            "ON langchain_pg_embedding USING hnsw "
+                            "(embedding vector_cosine_ops) "
+                            "WITH (m = :m, ef_construction = :ef_construction)"
+                        ),
+                        {
+                            "m": settings.PGVECTOR_HNSW_M,
+                            "ef_construction": settings.PGVECTOR_HNSW_EF_CONSTRUCTION,
+                        },
+                    )
+                logger.info("Ensured HNSW cosine index on langchain_pg_embedding.embedding")
+            except Exception as e:
+                logger.warning(
+                    "HNSW index creation skipped; using exact vector search. Reason: %s",
+                    e,
+                )
 
         _vector_index_bootstrap_done = True
 
