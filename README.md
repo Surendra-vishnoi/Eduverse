@@ -1,228 +1,122 @@
-# Eduverse Backend
 
-Production-ready FastAPI backend for Eduverse AI Tutor.
+<div align="center">
+  <h1>🌌 Eduverse — AI Tutoring Platform</h1>
+  <p><em>Multi-modal, stateful tutoring backend (LangGraph + FastAPI + Groq).</em></p>
 
-This service handles:
-- Google OAuth authentication with HttpOnly cookie sessions
-- Google Classroom sync (courses and attached files)
-- File ingestion and indexing into PostgreSQL + pgvector
-- Retrieval-augmented chat with citations and session memory
+  <p>
+    <img src="https://img.shields.io/badge/Python-3.10+-blue.svg" alt="Python">
+    <img src="https://img.shields.io/badge/Framework-FastAPI-009688.svg" alt="FastAPI">
+    <img src="https://img.shields.io/badge/DB-PostgreSQL-336791.svg" alt="Postgres">
+    <img src="https://img.shields.io/badge/AI-Groq%20%7C%20LangGraph-orange.svg" alt="AI">
+  </p>
+</div>
 
-## Repository
+---
 
-Primary backend repository:
+**Short summary:** Eduverse is a production-oriented backend that ingests and indexes multi-modal educational content (video, audio, documents, images), performs hybrid retrieval, and powers a stateful tutoring agent. It focuses on reliability (connection pooling, retries, summarization), cost-conscious inference usage, and predictable scaling for real-world deployments.
 
-- https://github.com/Surendra-vishnoi/Eduverse
+**Repository**
 
-Related frontend repository:
+- Backend: https://github.com/Surendra-vishnoi/Eduverse
+- Frontend: https://github.com/Surendra-vishnoi/frontend_eduverse
 
-- https://github.com/Surendra-vishnoi/frontend_eduverse
-
-## Live Deployment
+**Live Deployment**
 
 - Frontend (Vercel): https://frontend-eduverse.vercel.app/
 - Backend API (Render): https://eduverse-4x8o.onrender.com
 - API Docs (Swagger): https://eduverse-4x8o.onrender.com/docs
 - Health Check: https://eduverse-4x8o.onrender.com/health
 
-## Core Capabilities
+**Audience:** developers, SREs, and data scientists who will deploy, extend, or integrate the tutor backend.
 
-- OAuth login with Google and cookie-based JWT access/refresh sessions
-- Classroom synchronization for courses and course files
-- Upload endpoint for local files (without Classroom)
-- Background indexing workflow: download -> process -> chunk -> embed -> update DB
-- Hybrid retrieval (vector + PostgreSQL full-text search + optional rerank)
-- Stateful AI tutoring with streaming and non-streaming chat endpoints
-- Citation extraction for answer grounding
-- CSRF protection for all state-changing authenticated requests
+## Highlights
 
-## Architecture Overview
+- Agent orchestration: LangGraph state machines manage ingestion and tutoring flows instead of a single monolithic workflow.
+- Hybrid retrieval: vector search (pgvector / HNSW) + PostgreSQL full-text search with Reciprocal Rank Fusion (RRF) for robust recall and precision.
+- Production hygiene: connection pooling (`psycopg_pool`, SQLAlchemy pools), rate limiting, health checks, and middleware for summarization and retries.
+- Multi-modal processing: FFmpeg + Groq Vision/Whisper for scalable video/audio/document pipelines.
 
-1. Auth:
-   - User starts login at /auth/login
-   - Google callback lands at /auth/callback
-   - Backend creates user (or updates existing), sets HttpOnly auth cookies + CSRF cookie, and redirects to frontend callback when configured
-2. Data Ingestion:
-   - Classroom sync pulls courses and file metadata
-   - Files are downloaded to local storage and tracked in PostgreSQL
-3. Indexing:
-   - LangGraph workflow processes file content and stores embeddings in pgvector
-   - File status/chunk metadata are updated in DB
-4. Chat:
-   - LangGraph tutor agent calls tools
-   - Retriever fetches relevant chunks
-   - Response includes citations and supports session history
+## Quickstart (local development)
 
-## Project Structure
-
-```text
-backend/
-  app/
-    api/routes/        # FastAPI route modules
-    core/              # config, database, security, shared utils
-    models/            # SQLAlchemy models
-    processing/        # PDF, image, and document processors
-    rag/               # agent, retriever, vector store, tools, memory
-    services/          # Google OAuth, Classroom, Drive integrations
-    workflows/         # LangGraph indexing state machine
-    main.py            # FastAPI app entrypoint
-  Dockerfile
-  requirements.txt
-  .env.example
-```
-
-## API Surface (High-Level)
-
-- /auth
-  - GET /login
-  - GET /callback
-  - POST /refresh
-  - POST /logout
-  - GET /me
-- /classroom
-  - GET /courses
-  - GET /courses/sync
-  - POST /courses/{course_id}/sync-files
-  - GET /courses/{course_id}/files
-- /files
-  - POST /upload
-  - GET /supported-formats
-- /indexing
-  - POST /file/{file_id}
-  - POST /course/{course_id}
-  - GET /status/{file_id}
-  - DELETE /file/{file_id}
-  - DELETE /course/{course_id}
-- /chat
-  - POST /query
-  - POST /query/stream
-  - GET /sessions
-  - GET /history/{session_id}
-  - DELETE /session/{session_id}
-
-## Local Development
-
-### 1) Prerequisites
-
-- Python 3.11+
-- PostgreSQL (with pgvector extension enabled)
-- Google OAuth credentials
-- Groq API key
-- Nomic API key
-
-### 2) Setup
+1. Clone and open the backend folder:
 
 ```bash
+git clone https://github.com/Surendra-vishnoi/Eduverse.git
 cd backend
+```
+
+2. Create a virtualenv and install dependencies:
+
+```bash
 python -m venv .venv
-.venv\Scripts\activate
+.venv\\Scripts\\activate   # Windows
 pip install -r requirements.txt
 ```
 
-### 3) Configure Environment
+3. Copy `.env.example` to `.env` and fill values (DB, Groq API key, Google OAuth). Key vars include `DATABASE_URL`, `PG_SYNC_URL`/`PG_CONNINFO`, `GROQ_API_KEY`, `GOOGLE_CLIENT_ID`.
 
-Create .env from .env.example and set values for all required keys.
-
-### 4) Run API
+4. Start dev server:
 
 ```bash
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+uvicorn app.main:app --reload
 ```
 
-Then open:
-- http://localhost:8000/docs
-- http://localhost:8000/health
+Open `http://localhost:8000/docs` for the API UI.
 
-## Environment Variables
+## Architecture & Rationale
 
-Essential variables:
-- JWT_SECRET
-- SECRET_KEY
-- FERNET_KEY
-- DATABASE_URL
-- GOOGLE_CLIENT_ID
-- GOOGLE_CLIENT_SECRET
-- GOOGLE_REDIRECT_URI
-- GROQ_API_KEY
-- NOMIC_API_KEY
+- `app/core/database.py` — async SQLAlchemy engine (`create_async_engine`) with explicit `pool_size` and `max_overflow` to avoid per-request connection churn when serving concurrent users. Using asyncpg keeps async semantics and performance.
+- `app/core/sync_db.py` — shared synchronous engine for code paths that require sync DB access (e.g., some legacy utilities, offline scripts). Pooling avoids repeated connect/disconnect latency.
+- `app/rag/agent.py` — module-level `psycopg_pool.ConnectionPool` used by the LangGraph `PostgresSaver` checkpointer. This pool is lazily initialized and configured with keepalive/reconnect options to tolerate cloud-managed DB idleness (e.g., Supabase).
 
-Frontend/OAuth integration variables:
-- FRONTEND_URL
-- FRONTEND_AUTH_CALLBACK_PATH
-- BACKEND_CORS_ORIGINS
+Why these choices:
+- `psycopg_pool` for long-lived checkpoint writes provides robust connection lifecycle control and quick reconnection on transient errors.
+- Hybrid retrieval (vectors + FTS + RRF) balances recall (vectors) with precision for short queries (FTS) and reduces hallucination risk.
+- Summarization middleware reduces context size and model call volume — this is an explicit cost-control design decision.
 
-Auth cookie and CSRF settings:
-- ACCESS_TOKEN_EXPIRE_MINUTES
-- REFRESH_TOKEN_EXPIRE_DAYS
-- AUTH_COOKIE_ENABLED
-- AUTH_COOKIE_ACCESS_NAME
-- AUTH_COOKIE_REFRESH_NAME
-- AUTH_COOKIE_DOMAIN
-- AUTH_COOKIE_PATH
-- AUTH_COOKIE_SECURE
-- AUTH_COOKIE_SAMESITE
-- CSRF_PROTECTION_ENABLED
-- CSRF_COOKIE_NAME
-- CSRF_HEADER_NAME
+## Deployment (recommended)
 
-Other useful settings:
-- UPLOAD_DIR
-- DEBUG
-- RAG_ENABLE_RERANK
-- PDF_EXTRACT_IMAGES
+- Database: Supabase or managed PostgreSQL (enable pgvector extension if using vector search). Configure connection pooling at the app level and consider PgBouncer for heavy connection fan-out.
+- Backend: containerize and deploy on Render/Heroku/AWS ECS or a managed instance. Use an ASGI server (Uvicorn/Hypercorn) behind a load balancer.
+- Frontend: host on Vercel or Netlify. Keep the API URL and cookie/security settings aligned with CORS and session management.
 
-Vector performance settings:
-- VECTOR_EMBEDDING_DIM
-- PGVECTOR_ENABLE_FTS_GIN_INDEX
-- PGVECTOR_ENABLE_HNSW
-- PGVECTOR_AUTO_MIGRATE_VECTOR_DIMENSION
-- PGVECTOR_HNSW_M
-- PGVECTOR_HNSW_EF_CONSTRUCTION
+Example: Docker + Compose (production-ready patterns)
 
-## OAuth Redirect Integration Notes
+- Build a backend image, use an externally managed PostgreSQL, and set environment variables via the platform secrets manager. Keep `GROQ_API_KEY` and OAuth secrets in secret storage.
 
-This backend now uses cookie-only browser auth:
+## Configuration & Tuning
 
-- Automatic frontend redirect (recommended):
-  - If FRONTEND_URL is set, /auth/callback redirects to frontend callback path.
-  - During callback handling, backend sets:
-    - HttpOnly access cookie
-    - HttpOnly refresh cookie
-    - readable CSRF cookie (double-submit pattern)
-- JSON response mode (fallback when no frontend redirect is configured):
-  - /auth/callback returns authenticated user metadata and still sets auth/CSRF cookies.
+- Connection pools:
+  - `app/core/database.py` (async): tune `pool_size` and `max_overflow` to match expected concurrency and DB capacity.
+  - `app/rag/agent.py` (psycopg_pool): `min_size`, `max_size`, and keepalive settings are present to handle Supabase timeouts — adjust `max_size` for your concurrency profile.
+- Rate limits & retries: `ModelRetryMiddleware` and `ModelCallLimitMiddleware` are in place; reduce LLM temperature and summarization thresholds to optimize usage costs.
 
-For best UX in browser login flow, configure:
-- FRONTEND_URL=https://frontend-eduverse.vercel.app
-- FRONTEND_AUTH_CALLBACK_PATH=/auth/callback
+## Testing & CI
 
-## Frontend Integration Contract (Cookie + CSRF)
+- Unit tests: Located under `app/tests/` (if present). Run with `pytest`.
+- Static checks: use `black`/`ruff`/`isort` in CI. Add a workflow file to run tests on PRs.
 
-- Browser requests must include cookies (`credentials: include`).
-- For mutating methods (`POST`, `PUT`, `PATCH`, `DELETE`), send CSRF header:
-  - header name: `X-CSRF-Token` (configurable via `CSRF_HEADER_NAME`)
-  - value: CSRF cookie value (default cookie name `eduverse_csrf_token`)
-- On `401`, frontend should call `/auth/refresh` and retry once.
-- `/auth/refresh` rotates both access and refresh cookies in current implementation.
-- `/auth/logout` clears auth + CSRF cookies and server session.
+## Security
 
-## Deployment Notes
+- Keep secrets out of source control. Use environment variables or your cloud provider's secret manager.
+- OAuth tokens and LLM API keys should be rotated regularly.
 
-- Use HTTPS in production (required for secure auth/session behavior).
-- Ensure CORS contains your frontend domain.
-- Keep SECRET_KEY/JWT_SECRET/FERNET_KEY unique and long.
-- Configure GOOGLE_REDIRECT_URI to your deployed backend callback URL.
-- Mount persistent storage if local uploads must survive restarts.
-- Prefer `AUTH_COOKIE_SAMESITE=lax` (default) and keep CSRF protection enabled.
+## Troubleshooting
 
-## Frontend Integration
+- Connection closed errors: increase pool sizes or enable periodic health checks; verify cloud DB idle timeout and adjust keepalive.
+- Slow ingestion: check FFmpeg availability and CPU/IO; consider batching frame extraction and async workers.
 
-Frontend is deployed separately and consumes this API:
-- https://frontend-eduverse.vercel.app/
+## Contributing
 
-If frontend domain changes, update:
-- BACKEND_CORS_ORIGINS
-- FRONTEND_URL
+See standard contribution flow — fork, branch, PR. Run tests and linting locally before opening PRs.
+
+## References & Further Reading
+
+- See `EDUVERSE_COMPLETE_PROJECT_GUIDE.md` and `EDUVERSE_ADVANCED_GUIDE.md` for deeper architecture notes and operational guidance.
+
+---
+
+Updated: concise professional README with preserved repo & live deployment links.
 
 
 
