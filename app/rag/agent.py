@@ -104,8 +104,8 @@ def _get_checkpointer() -> PostgresSaver:
 # History compression settings
 # Keep only the most recent 3 messages after summarization (cost-conscious mode).
 MAX_HISTORY_MESSAGES = 3
-# Trigger summarization only when history grows large to reduce extra summary calls.
-SUMMARY_TRIGGER_MESSAGES = 40
+# Trigger summarization at 20 messages to avoid free-tier Groq rate limits.
+SUMMARY_TRIGGER_MESSAGES = 20
 
 
 # Agent builder

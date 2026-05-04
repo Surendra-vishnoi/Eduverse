@@ -112,7 +112,7 @@ See standard contribution flow — fork, branch, PR. Run tests and linting local
 
 ## References & Further Reading
 
-- See `EDUVERSE_COMPLETE_PROJECT_GUIDE.md` and `EDUVERSE_ADVANCED_GUIDE.md` for deeper architecture notes and operational guidance.
+- See [EDUVERSE_COMPLETE_PROJECT_GUIDE.md](EDUVERSE_COMPLETE_PROJECT_GUIDE.md) and [EDUVERSE_ADVANCED_GUIDE.md](EDUVERSE_ADVANCED_GUIDE.md) for deeper architecture notes and operational guidance.
 
 ---
 
